@@ -1,0 +1,3 @@
+{"messages":[{"role":"user","content":"Olá, tudo bem?"},{"role":"assistant","content":"Olá! Tudo ótimo, como posso ajudar você hoje?"}]}
+{"messages":[{"role":"user","content":"Qual é a capital do Brasil?"},{"role":"assistant","content":"A capital do Brasil é Brasília."}]}
+{"messages":[{"role":"user","content":"Me explique o que é Python."},{"role":"assistant","content":"Python é uma linguagem de programação de alto nível, interpretada e de propósito geral, muito usada em ciência de dados, automação e desenvolvimento web."}]}
