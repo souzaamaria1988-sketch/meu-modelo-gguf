@@ -260,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Guarda config + tokenizer do modelo base: é o diretório local exigido
     # pelo `convert_lora_to_gguf.py --base`.
+    if not getattr(modelo.config, "architectures", None):
+        modelo.config.architectures = [modelo.__class__.__name__]
     shutil.rmtree(args.dir_base_config, ignore_errors=True)
     args.dir_base_config.mkdir(parents=True, exist_ok=True)
     modelo.config.save_pretrained(args.dir_base_config)

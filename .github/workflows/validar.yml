@@ -95,5 +95,10 @@ jobs:
               print(f"{caminho}: {len(leitor.tensors)} tensores, "
                     f"arquitetura={arquitetura.contents() if arquitetura else '?'}")
               assert len(leitor.tensors) > 0, f"{caminho} não tem tensores"
-          print("GGUF válido.")
+
+          # sem o chat template o modelo não conversa direito no Ollama/llama.cpp
+          modelo = GGUFReader("modelo_final.gguf")
+          assert modelo.get_field("tokenizer.chat_template") is not None, \
+              "modelo_final.gguf saiu sem chat template"
+          print("GGUF válido, com vocabulário e chat template.")
           EOF
