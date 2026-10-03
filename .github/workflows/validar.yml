@@ -1,8 +1,9 @@
-name: Validar dataset
+name: Validar
 
-# Checagem rápida (segundos) que roda a cada push: garante que o
-# train.jsonl e o script de treino estão íntegros antes de gastar
-# horas de CPU no workflow de treino.
+# Checagens automáticas que rodam a cada push, para não descobrir um
+# problema só depois de horas de CPU no workflow de treino:
+#   - dataset: segundos;
+#   - pipeline: ~5 min, treina 2 exemplos e gera um GGUF de verdade.
 on:
   push:
     paths:
@@ -16,7 +17,8 @@ permissions:
   contents: read
 
 jobs:
-  validar:
+  dataset:
+    name: Dataset e testes
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -35,3 +37,63 @@ jobs:
 
       - name: Testes das funções de dados
         run: python scripts/testes.py
+
+  pipeline:
+    name: Teste rápido do pipeline (2 exemplos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dataset
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Clonar llama.cpp
+        run: |
+          git clone --depth 1 --branch v0.5.0 \
+            https://github.com/ggml-org/llama.cpp.git
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          REQ=llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          TORCH_PIN="$(grep -E '^torch==' "$REQ" | head -1)"
+          pip install --index-url https://download.pytorch.org/whl/cpu "${TORCH_PIN:-torch}" \
+            || echo "Aviso: wheel de CPU indisponível; seguindo com o índice padrão."
+          pip install -r "$REQ"
+          pip install peft accelerate
+
+      - name: Treinar 2 exemplos e converter para GGUF
+        run: |
+          python scripts/treinar.py \
+            --dataset train.jsonl \
+            --llama-cpp llama.cpp \
+            --max-exemplos 2 \
+            --tamanho-maximo 512 \
+            --limite-horas 0.2
+
+      - name: Conferir os arquivos GGUF gerados
+        run: |
+          ls -lh modelo_final.gguf adaptador_lora.gguf
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "llama.cpp/gguf-py")
+          from gguf import GGUFReader
+
+          for caminho in ("modelo_final.gguf", "adaptador_lora.gguf"):
+              leitor = GGUFReader(caminho)
+              arquitetura = leitor.get_field("general.architecture")
+              print(f"{caminho}: {len(leitor.tensors)} tensores, "
+                    f"arquitetura={arquitetura.contents() if arquitetura else '?'}")
+              assert len(leitor.tensors) > 0, f"{caminho} não tem tensores"
+          print("GGUF válido.")
+          EOF
