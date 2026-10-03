@@ -26,7 +26,7 @@ rodar no llama.cpp, Ollama ou LM Studio.
 | `epocas` | `1` | Épocas de treino |
 | `max_exemplos` | `0` | Limita o dataset (0 = todos). Use `20` para testar |
 | `quantizacao` | `q8_0` | Formato do GGUF (`q8_0`, `f16`, `bf16`, `f32`) |
-| `limite_horas` | `4` | Encerra o treino com elegância e exporta mesmo assim |
+| `limite_horas` | `4.5` | Encerra o treino com elegância e exporta mesmo assim |
 | `llama_cpp_ref` | `v0.5.0` | Tag do llama.cpp usada na conversão |
 
 ### Artefatos gerados

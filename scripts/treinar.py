@@ -205,7 +205,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lora-alpha", type=int, default=16)
     p.add_argument("--max-exemplos", type=int, default=0, help="0 = todos")
     p.add_argument("--quantizacao", default="q8_0", choices=["q8_0", "f16", "bf16", "f32"])
-    p.add_argument("--limite-horas", type=float, default=4.0,
+    p.add_argument("--limite-horas", type=float, default=4.5,
                    help="interrompe o treino com elegância após N horas e exporta mesmo assim")
     p.add_argument("--semente", type=int, default=42)
     p.add_argument("--apenas-validar", action="store_true",
@@ -242,7 +242,6 @@ def main(argv: list[str] | None = None) -> int:
     from peft import LoraConfig, get_peft_model
 
     set_seed(args.semente)
-    torch.set_num_threads(torch.get_num_threads())
     log.info("torch %s | threads=%d", torch.__version__, torch.get_num_threads())
 
     log.info("Baixando tokenizer e modelo base: %s", args.modelo_base)

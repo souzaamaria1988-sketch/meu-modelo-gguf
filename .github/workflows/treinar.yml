@@ -22,7 +22,7 @@ on:
         default: q8_0
       limite_horas:
         description: "Horas máximas de treino; ao atingir, encerra e exporta mesmo assim"
-        default: "4"
+        default: "4.5"
       llama_cpp_ref:
         description: "Tag/branch do llama.cpp usada na conversão"
         default: "v0.5.0"
