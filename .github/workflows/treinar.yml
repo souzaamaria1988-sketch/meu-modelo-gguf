@@ -9,15 +9,13 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Instalar dependências
+      - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install torch transformers peft accelerate datasets
@@ -36,81 +34,63 @@ jobs:
           from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling
           from peft import LoraConfig, get_peft_model
 
-          MODELO_BASE = "Qwen/Qwen2.5-0.5B-Instruct"
-          ARQUIVO_DADOS = "train.jsonl"
-          PASTA_SAIDA = "modelo_treinado"
+          BASE = "Qwen/Qwen2.5-0.5B-Instruct"
 
-          tokenizer = AutoTokenizer.from_pretrained(MODELO_BASE, trust_remote_code=True)
-          if tokenizer.pad_token is None:
-              tokenizer.pad_token = tokenizer.eos_token
+          tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
+          if tok.pad_token is None:
+              tok.pad_token = tok.eos_token
 
-          modelo = AutoModelForCausalLM.from_pretrained(
-              MODELO_BASE,
-              torch_dtype=torch.float32,
-              low_cpu_mem_usage=True,
-              trust_remote_code=True
-          )
+          model = AutoModelForCausalLM.from_pretrained(
+              BASE, torch_dtype=torch.float32,
+              low_cpu_mem_usage=True, trust_remote_code=True)
+          model = get_peft_model(model, LoraConfig(
+              r=8, lora_alpha=16,
+              target_modules=["q_proj","k_proj","v_proj","o_proj"],
+              lora_dropout=0.0, bias="none", task_type="CAUSAL_LM"))
 
-          lora_config = LoraConfig(
-              r=8,
-              lora_alpha=16,
-              target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-              lora_dropout=0.0,
-              bias="none",
-              task_type="CAUSAL_LM",
-          )
-          modelo = get_peft_model(modelo, lora_config)
+          with open("train.jsonl", encoding="utf-8") as f:
+              dados = [json.loads(l) for l in f if l.strip()]
 
-          def formatar_exemplo(ex):
-              texto = tokenizer.apply_chat_template(ex["messages"], tokenize=False, add_generation_prompt=False)
-              return {"text": texto}
+          ds = Dataset.from_list(dados)
 
-          with open(ARQUIVO_DADOS, "r", encoding="utf-8") as f:
-              dados = [json.loads(line) for line in f if line.strip()]
+          # --- CORREÇÃO: remove todas as colunas extras (domain, etc.) ---
+          colunas_extras = [c for c in ds.column_names if c != "messages"]
+          if colunas_extras:
+              print("Removendo colunas extras:", colunas_extras)
+              ds = ds.remove_columns(colunas_extras)
 
-          dataset = Dataset.from_list(dados).map(formatar_exemplo)
-          dataset = dataset.map(
-              lambda e: tokenizer(e["text"], truncation=True, max_length=256, padding="max_length"),
+          # Aplica template de chat
+          ds = ds.map(lambda ex: {"text": tok.apply_chat_template(ex["messages"], tokenize=False)})
+
+          # Tokeniza e remove 'messages'/'text' finais
+          ds = ds.map(
+              lambda e: tok(e["text"], truncation=True, max_length=256, padding="max_length"),
               batched=True,
-              remove_columns=["messages", "text"]
-          )
-          dataset = dataset.train_test_split(test_size=0.1)
+              remove_columns=["messages", "text"])
+          ds = ds.train_test_split(test_size=0.1)
 
-          training_args = TrainingArguments(
-              output_dir=PASTA_SAIDA,
-              num_train_epochs=1,
+          args = TrainingArguments(
+              output_dir="out", num_train_epochs=1,
               per_device_train_batch_size=1,
               gradient_accumulation_steps=4,
-              learning_rate=2e-4,
-              logging_steps=10,
-              save_strategy="no",
-              report_to="none",
-              remove_unused_columns=False,
-          )
+              learning_rate=2e-4, logging_steps=10,
+              save_strategy="no", report_to="none",
+              remove_unused_columns=False)
 
-          trainer = Trainer(
-              model=modelo,
-              args=training_args,
-              train_dataset=dataset["train"],
-              eval_dataset=dataset["test"],
-              data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
-          )
-          trainer.train()
+          Trainer(model=model, args=args,
+                  train_dataset=ds["train"], eval_dataset=ds["test"],
+                  data_collator=DataCollatorForLanguageModeling(tok, mlm=False)).train()
 
-          modelo.save_pretrained(PASTA_SAIDA)
-          tokenizer.save_pretrained(PASTA_SAIDA)
+          model.save_pretrained("lora")
+          tok.save_pretrained("lora")
 
-          subprocess.run([
-              "python", "llama.cpp/convert_lora_to_gguf.py",
-              "--base", MODELO_BASE,
-              PASTA_SAIDA,
-              "--outfile", "modelo_final.gguf",
-              "--outtype", "q8_0"
-          ], check=True)
+          subprocess.run(["python","llama.cpp/convert_lora_to_gguf.py",
+                          "--base",BASE,"lora",
+                          "--outfile","modelo_final.gguf",
+                          "--outtype","q8_0"], check=True)
           EOF
 
-      - name: Upload do arquivo GGUF
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: modelo-gguf
           path: modelo_final.gguf
