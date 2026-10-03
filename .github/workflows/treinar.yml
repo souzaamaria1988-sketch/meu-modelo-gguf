@@ -2,95 +2,123 @@ name: Treinar Modelo e Exportar GGUF
 
 on:
   workflow_dispatch:
+    inputs:
+      modelo_base:
+        description: "Modelo base no Hugging Face"
+        default: "Qwen/Qwen2.5-0.5B-Instruct"
+      tamanho_maximo:
+        description: "Tokens por exemplo (prompt + resposta). Abaixo de ~512 o modelo quase não vê a resposta"
+        default: "1024"
+      epocas:
+        description: "Épocas de treino"
+        default: "1"
+      max_exemplos:
+        description: "Limite de exemplos (0 = todos). Use 20 para um teste rápido do pipeline"
+        default: "0"
+      quantizacao:
+        description: "Formato do GGUF final"
+        type: choice
+        options: [q8_0, f16, bf16, f32]
+        default: q8_0
+      limite_horas:
+        description: "Horas máximas de treino; ao atingir, encerra e exporta mesmo assim"
+        default: "4.5"
+      llama_cpp_ref:
+        description: "Tag/branch do llama.cpp usada na conversão"
+        default: "v0.5.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: treinar-gguf
+  cancel-in-progress: false
 
 jobs:
-  build-and-train:
+  treinar:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      PYTHONUNBUFFERED: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
-      - uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: "3.11"
+
+      # Falha em segundos se o dataset estiver quebrado, em vez de só
+      # descobrir depois de horas de treino.
+      - name: Validar dataset
+        run: python scripts/treinar.py --apenas-validar --dataset train.jsonl
+
+      - name: Clonar llama.cpp
+        env:
+          LLAMA_CPP_REF: ${{ inputs.llama_cpp_ref }}
+        run: |
+          git clone --depth 1 --branch "$LLAMA_CPP_REF" \
+            https://github.com/ggml-org/llama.cpp.git
 
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install torch transformers peft accelerate datasets
+          REQ=llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 
-      - name: Clonar llama.cpp
-        run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
-          cd llama.cpp
-          pip install -r requirements.txt
+          # 1) torch na build de CPU: o runner não tem GPU e a roda do PyPI
+          #    arrasta ~5 GB de pacotes CUDA inúteis aqui.
+          TORCH_PIN="$(grep -E '^torch==' "$REQ" | head -1)"
+          pip install --index-url https://download.pytorch.org/whl/cpu "${TORCH_PIN:-torch}" \
+            || echo "Aviso: wheel de CPU indisponível; seguindo com o índice padrão."
+
+          # 2) versões exigidas pelos conversores do llama.cpp
+          #    (fixam transformers/numpy/gguf/sentencepiece).
+          pip install -r "$REQ"
+
+          # 3) extras de treino, que respeitam os pinos acima.
+          pip install peft accelerate
+
+          pip list
 
       - name: Treinar e converter para GGUF
+        env:
+          MODELO_BASE: ${{ inputs.modelo_base }}
+          TAMANHO_MAXIMO: ${{ inputs.tamanho_maximo }}
+          EPOCAS: ${{ inputs.epocas }}
+          MAX_EXEMPLOS: ${{ inputs.max_exemplos }}
+          QUANTIZACAO: ${{ inputs.quantizacao }}
+          LIMITE_HORAS: ${{ inputs.limite_horas }}
         run: |
-          python - <<'EOF'
-          import json, torch, subprocess
-          from datasets import Dataset
-          from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling
-          from peft import LoraConfig, get_peft_model
+          python scripts/treinar.py \
+            --dataset train.jsonl \
+            --modelo-base "$MODELO_BASE" \
+            --llama-cpp llama.cpp \
+            --saida modelo_final.gguf \
+            --tamanho-maximo "$TAMANHO_MAXIMO" \
+            --epocas "$EPOCAS" \
+            --max-exemplos "$MAX_EXEMPLOS" \
+            --quantizacao "$QUANTIZACAO" \
+            --limite-horas "$LIMITE_HORAS"
 
-          BASE = "Qwen/Qwen2.5-0.5B-Instruct"
+      # Mesmo que a conversão falhe, o treino (horas de CPU) não se perde.
+      - name: Enviar adaptador LoRA
+        if: always() && hashFiles('lora/**') != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: adaptador-lora
+          path: |
+            lora/
+            adaptador_lora.gguf
+          if-no-files-found: ignore
 
-          tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
-          if tok.pad_token is None:
-              tok.pad_token = tok.eos_token
-
-          model = AutoModelForCausalLM.from_pretrained(
-              BASE, torch_dtype=torch.float32,
-              low_cpu_mem_usage=True, trust_remote_code=True)
-          model = get_peft_model(model, LoraConfig(
-              r=8, lora_alpha=16,
-              target_modules=["q_proj","k_proj","v_proj","o_proj"],
-              lora_dropout=0.0, bias="none", task_type="CAUSAL_LM"))
-
-          with open("train.jsonl", encoding="utf-8") as f:
-              dados = [json.loads(l) for l in f if l.strip()]
-
-          ds = Dataset.from_list(dados)
-
-          # --- CORREÇÃO: remove todas as colunas extras (domain, etc.) ---
-          colunas_extras = [c for c in ds.column_names if c != "messages"]
-          if colunas_extras:
-              print("Removendo colunas extras:", colunas_extras)
-              ds = ds.remove_columns(colunas_extras)
-
-          # Aplica template de chat
-          ds = ds.map(lambda ex: {"text": tok.apply_chat_template(ex["messages"], tokenize=False)})
-
-          # Tokeniza e remove 'messages'/'text' finais
-          ds = ds.map(
-              lambda e: tok(e["text"], truncation=True, max_length=256, padding="max_length"),
-              batched=True,
-              remove_columns=["messages", "text"])
-          ds = ds.train_test_split(test_size=0.1)
-
-          args = TrainingArguments(
-              output_dir="out", num_train_epochs=1,
-              per_device_train_batch_size=1,
-              gradient_accumulation_steps=4,
-              learning_rate=2e-4, logging_steps=10,
-              save_strategy="no", report_to="none",
-              remove_unused_columns=False)
-
-          Trainer(model=model, args=args,
-                  train_dataset=ds["train"], eval_dataset=ds["test"],
-                  data_collator=DataCollatorForLanguageModeling(tok, mlm=False)).train()
-
-          model.save_pretrained("lora")
-          tok.save_pretrained("lora")
-
-          subprocess.run(["python","llama.cpp/convert_lora_to_gguf.py",
-                          "--base",BASE,"lora",
-                          "--outfile","modelo_final.gguf",
-                          "--outtype","q8_0"], check=True)
-          EOF
-
-      - uses: actions/upload-artifact@v4
+      - name: Enviar modelo GGUF
+        uses: actions/upload-artifact@v5
         with:
           name: modelo-gguf
           path: modelo_final.gguf
+          if-no-files-found: error
+          compression-level: 0
