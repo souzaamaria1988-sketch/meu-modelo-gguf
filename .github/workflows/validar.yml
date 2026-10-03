@@ -1,0 +1,37 @@
+name: Validar dataset
+
+# Checagem rápida (segundos) que roda a cada push: garante que o
+# train.jsonl e o script de treino estão íntegros antes de gastar
+# horas de CPU no workflow de treino.
+on:
+  push:
+    paths:
+      - "train.jsonl"
+      - "scripts/**"
+      - ".github/workflows/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Compilar scripts
+        run: python -m compileall -q scripts
+
+      - name: Validar train.jsonl
+        run: python scripts/treinar.py --apenas-validar --dataset train.jsonl
+
+      - name: Testes das funções de dados
+        run: python scripts/testes.py

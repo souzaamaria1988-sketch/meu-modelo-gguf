@@ -1,0 +1,12 @@
+# artefatos de treino/conversão (gerados pelo workflow)
+lora/
+modelo_merged/
+base_config/
+out/
+llama.cpp/
+*.gguf
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
